@@ -34,12 +34,20 @@ Kommandoen kan også være aflæsning af tacometer på skrueakslen
 SBTA000 Styrbord tacometer aflæses i rpm.
 BBTA000 Bagbord tacometer aflæses i rpm.
 
+
+//Martins tilføjelse:
+mode = 2 Begge motorer frem
+mode = 3 SB motor reverseret
 */
 
 #include "defines.h"
 #include "WiFi.h"
 #include "AsyncUDP.h"
 #include <ESP32Servo.h>
+
+#define HAST_GRADIENT 5 //tilføjet af Martin
+#define MOTOR_NORMAL 2 //tilføjet af Martin
+#define MOTOR_REVERS 3 //tilføjet af Martin
 
 
 const char* ssid = WIFI_SSID; //Enter SSID
@@ -70,19 +78,28 @@ const int BTA_pin = 35;
 const int FUGT_pin = 39;
 
 // Globale variable
-char kommandoType[5];
-int kommandoNummer;
-const int maxCnt = 100;
-volatile int cnt = 0;
+// char kommandoType[5];
+// int kommandoNummer;
+// const int maxCnt = 100;
+// volatile int cnt = 0;
 String RCdata;
 
+//Martins tilføjelser
+unsigned long t0 = 0;  //
+int energi = 0;
+// const int ROR_DELAY =0;//??
+
 // Måleværdier
-float fugt = 0;
+// float fugt = 0;
 
 // Kommandoer modtaget over WiFi
 int ror = 0;
-int energi = 0;
-int mode = 0;
+// int energi = 0;// Rettet af Martin
+int speedSP = 0;// Rettet af Martin
+int mode = 3;
+unsigned long t1 = 0;
+
+int speedBB=0, speedSB=0;
 
 // Setpoints
 
@@ -90,6 +107,7 @@ int mode = 0;
 
 // Funktioner
 
+void analyserData(String RCdata,int ror,int speedSP, int mode);
 
 void setup() {
               
@@ -105,7 +123,13 @@ void setup() {
 		delay(100);
 		Serial.print(".");
 	}
-	Serial.println(" Connected! to WiFi.localIP()");
+  Serial.print(" Connected! to WiFi.localIP()");
+	Serial.println(WiFi.localIP());
+	Serial.print(" Connected! to WiFi.GatewayIP");
+	Serial.println(WiFi.gatewayIP());
+	Serial.print(" Connected! to WiFi.");
+	Serial.println(WiFi.broadcastIP());
+
 
   // Definer funktion af benene på ESP 32
   pinMode(K0_pin, OUTPUT);
@@ -150,79 +174,143 @@ void setup() {
 
   // Initier tacometre
 
-
   Serial.println("setup() sluttet, starter overvågning af lokal WiFi");
-
   // 3. lytter efter indkommen beskeder på port:13 
   // (beskeder fra kommunikations board (1) til motorboard (3))
-  // Vi forventer 3 heltal formateret som <ror,energi,mode>
-  if(udp.listen(WiFi.localIP(),13)) {
+  // Vi forventer 3 heltal formateret som <ror,speedSP,mode>
+  
+  if(udp.listen(WiFi.localIP(),22345)) {
+    Serial.print("UDP Listening on IP: ");
+    Serial.println(WiFi.localIP());
     udp.onPacket([](AsyncUDPPacket packet) {
       if (packet.length() > 0){
+
         char buffer[packet.length()+1];
+        sprintf(buffer, "%s", packet.data());
+        buffer[packet.length()] ='\0';
+        // udp.broadcastTo(buffer, 1234);//testrespons til Kommunikations modul
+        RCdata = String( buffer);
+        
+        
         //cast´er fra byte-array til char-array             
-        RCdata = String( (char*) packet.data());
+        // RCdata = String( (char*) packet.data());
+        // Serial.printf("%s\n",RCdata);
+        // Serial.println(RCdata);
+        //get value
+        // analyserData(RCdata,ror,speedSP,mode);
       }
     });
   }
 }
 
 void loop() {
-  // analyserer data
+//   //Analyse af input data er flyttet over i en funktion
+  analyserData(RCdata,&ror,&speedSP,&mode);
   
-  int openingBracket = RCdata.indexOf('<');
-  int closingBracket = RCdata.indexOf('>');
-  int firstComma = RCdata.indexOf(',');
-  int secondComma = RCdata.indexOf(',', firstComma+1);
-  String rorString = RCdata.substring(openingBracket+1,firstComma);
-  ror = rorString.toInt();
-  String energiString = RCdata.substring(firstComma+1,secondComma);
-  energi = energiString.toInt();
-  String modeString = RCdata.substring(secondComma+1,closingBracket);
-  mode = modeString.toInt();
+  if(t1 < millis()){
+    t1 = millis() + HAST_GRADIENT;
+    //energi følger altid setpoint
+    energi < speedSP? energi++ : (energi > speedSP? energi--:0);
 
-  // præsentere parsing af data
-  Serial.printf("Ror = %d, Energi = %d, Mode = %d",ror,energi,mode);
-  Serial.println("");
+    if(mode == MOTOR_NORMAL){
+      //Både speedBB og speedSB skal følge energi (med fortegn)
+      speedBB < energi? speedBB++ : (speedBB>energi? speedBB--:0) ;
+      speedSB < energi? speedSB++ : (speedSB>energi?speedSB--:0) ;
+
+    }
+    else if(mode == MOTOR_REVERS){
+      //energi pos=> drej med ur => BB (frem): speedBB pos , SB (bak): speedSB neg
+      //energi neg => drej mod ur => BB (bak): speedBB neg , SB (frem): speedSB pos
+      // Vi ser at BB følger energi og SB følger - energi
+      speedBB < energi? speedBB++ : (speedBB > energi? speedBB-- :0 ) ;
+      speedSB <-energi ? speedSB++ : (speedSB> (-energi)?speedSB--:0);
+    }
+
+  }
+  
+//   // præsentere parsing af data
+//   Serial.printf("Ror = %d, Energi = %d, Mode = %d ",ror,energi,mode);
+//   // Serial.println("");
   
   //udfører ordrer
 
   if(mode > 0){
   //Ror:
 
-  SBror.write(ror);
-  BBror.write(ror);
-  delay(100);
-  //Motorer
-  if((energi > 95 ) && (energi < 105)){ //lig stille
-    Serial.print("Begge motorer holder stille");
-    analogWrite(SBM_LPWM_pin, 0);
-    analogWrite(SBM_RPWM_pin, 0);
-    delay(100);
-    analogWrite(BBM_LPWM_pin, 0);
-    analogWrite(BBM_RPWM_pin, 0);
-  }
-  else if (energi <= 95){ //bak
-    Serial.print("Begge motorer bakker");
-    analogWrite(SBM_RPWM_pin, 0);
-    analogWrite(SBM_LPWM_pin, (100-energi)*2);
-    delay(100);
-    analogWrite(BBM_RPWM_pin, (100-energi)*2);
-    analogWrite(BBM_LPWM_pin, 0);
-  }
-  else if (energi >= 105){ //frem
-    Serial.print("Begge motorer kører frem");
-    analogWrite(SBM_RPWM_pin, (energi-100)*2);
-    analogWrite(SBM_LPWM_pin, 0);
-    delay(100);
-    analogWrite(BBM_RPWM_pin, 0);
-    analogWrite(BBM_LPWM_pin, (energi-100)*2);
-  }
-  delay(100);
-  }
-  else{
+    SBror.write(ror + 90);
+    BBror.write(ror + 90);
 
-  }
+    //Motorer
 
+    if (-5 < speedBB  && speedBB < 5) {  //stop BB motor
+        Serial.print("BB motor stop ");
+        analogWrite(BBM_LPWM_pin, 0);
+        analogWrite(BBM_RPWM_pin, 0);
+    } 
+    else if (speedBB <= -5 ) {  //bak
+        Serial.printf("BB bakker %d, ",abs(speedBB) * 2);
+        analogWrite(BBM_RPWM_pin, abs(speedBB) * 2);
+        analogWrite(BBM_LPWM_pin, 0);
+    }
+    else if (5 <= speedBB) {  //frem
+        Serial.printf("BB fremad %d ", speedBB * 2 );
+        analogWrite(BBM_RPWM_pin, 0);
+        analogWrite(BBM_LPWM_pin, speedBB * 2);
+    }
+
+    if (-5 < speedSB  && speedSB < 5) {  //stop SB motor
+        Serial.print("SB motor stop ");
+        analogWrite(SBM_LPWM_pin, 0);
+        analogWrite(SBM_RPWM_pin, 0);
+    }
+    else if (speedSB <= -5 ) {  //bak
+        Serial.printf("SB bakker %d, ", abs(speedSB) * 2);
+        analogWrite(SBM_RPWM_pin, 0);
+        analogWrite(SBM_LPWM_pin, abs(speedSB) * 2);
+    }
+    else if (5 <= speedSB) {  //frem
+        Serial.printf("SB fremad %d",speedSB * 2);
+        analogWrite(SBM_RPWM_pin, speedSB * 2);
+        analogWrite(SBM_LPWM_pin, 0);
+    }
+
+        Serial.printf(" --- speedSP: %d, energi: %d, BBspeed: %d, SBspeed: %d, ror %d \n" , speedSP, energi, speedBB, speedSB, ror);
+
+    }else{
+//     //udfører ordrer
+
+//     //Ror:
+//     SBror.write(ror);
+//     BBror.write(ror);
+//       delay(100);
+//     //Motorer
+
+//     if((energi > 95 ) && (energi < 105)){ //lig stille
+//       Serial.print("Begge motorer holder stille");
+//       analogWrite(SBM_LPWM_pin, 0);
+//       analogWrite(SBM_RPWM_pin, 0);
+//       // delay(100);
+//       analogWrite(BBM_LPWM_pin, 0);
+//       analogWrite(BBM_RPWM_pin, 0);
+//     }
+//     else if (energi <= 95){ //bak
+//       Serial.printf("Begge motorer bakker. Hast: %i",(100-energi)*2);
+//       analogWrite(SBM_RPWM_pin, 0);
+//       analogWrite(SBM_LPWM_pin, (100-energi)*2);
+//       delay(100);
+//       analogWrite(BBM_RPWM_pin, (100-energi)*2);
+//       analogWrite(BBM_LPWM_pin, 0);
+//     }
+//     else if (energi >= 105){ //frem
+//       Serial.printf("Begge motorer kører frem. Hast: %d",(energi-100)*2);
+//       analogWrite(SBM_RPWM_pin, (energi-100)*2);
+//       analogWrite(SBM_LPWM_pin, 0);
+//       delay(100);
+//       analogWrite(BBM_RPWM_pin, 0);
+//       analogWrite(BBM_LPWM_pin, (energi-100)*2);
+//     }
+//     Serial.println();
+//     delay(100);
+    }
 }
 
