@@ -55,6 +55,7 @@ const char* password = WIFI_PASSWD; //Enter Password
 
 //name space
 AsyncUDP udp;
+WiFiUDP UDP;
 Servo SBror;
 Servo BBror;
 
@@ -108,6 +109,10 @@ int speedBB=0, speedSB=0;
 // Funktioner
 
 void analyserData(String RCdata,int ror,int speedSP, int mode);
+// Tildeler fast Ip-adresse til at identificere 'modulet' 
+IPAddress local_IP(192, 168, 4, 2); 
+IPAddress gateway(192, 168, 1, 1);
+IPAddress subnet(255, 255, 0, 0);
 
 void setup() {
               
@@ -117,12 +122,17 @@ void setup() {
   Serial.println("setup() startet");
 
   // 2. kontakt wifi
+   if (!WiFi.config(local_IP, gateway, subnet)) {
+        Serial.println("STA Failed to configure");
+        //ESP.restart(); //Respons 'Erlang-style'
+    }
   WiFi.begin(ssid, password);
 	while (WiFi.status() != WL_CONNECTED)
 	{
 		delay(100);
 		Serial.print(".");
 	}
+    delay(500);
   Serial.print(" Connected! to WiFi.localIP()");
 	Serial.println(WiFi.localIP());
 	Serial.print(" Connected! to WiFi.GatewayIP");
@@ -182,16 +192,21 @@ void setup() {
   if(udp.listen(WiFi.localIP(),22345)) {
     Serial.print("UDP Listening on IP: ");
     Serial.println(WiFi.localIP());
+    Serial.println(WiFi.broadcastIP());
     udp.onPacket([](AsyncUDPPacket packet) {
       if (packet.length() > 0){
-
         char buffer[packet.length()+1];
         sprintf(buffer, "%s", packet.data());
         buffer[packet.length()] ='\0';
-        // udp.broadcastTo(buffer, 1234);//testrespons til Kommunikations modul
+        // Serial.printf(" - modtaget pakke %s, sendt til ",buffer);
+        // Serial.print(packet.remoteIP());
+        // Serial.print(" - ");
+
         RCdata = String( buffer);
-        
-        
+        // reply to veryfy
+        UDP.beginPacket("192.168.4.1",1234);
+        UDP.print(buffer);
+        UDP.endPacket();
         //cast´er fra byte-array til char-array             
         // RCdata = String( (char*) packet.data());
         // Serial.printf("%s\n",RCdata);
